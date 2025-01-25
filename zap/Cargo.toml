@@ -1,0 +1,22 @@
+[package]
+name = "zap"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+prost = "0.13"
+anyhow = "1.0"
+tokio-stream = "0.1"
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "net"] }
+datafusion = "44.0"
+arrow = { version = "53.0", features = ["ffi"] }
+futures = "0.3"
+libc = "0.2"
+async-trait = "0.1"
+tikv-jemallocator = "0.6"
+
+[build-dependencies]
+cbindgen = "*"
+
+[lib]
+crate-type=["staticlib"]
