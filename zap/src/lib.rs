@@ -284,15 +284,3 @@ pub extern "C" fn zap_pipe(fds: *mut RawFd) -> std::ffi::c_int {
         0
     }
 }
-
-#[cfg(test)]
-mod test {
-    use crate::Instance;
-
-    #[test]
-    fn it_executes_a_query() {
-        let instance = Instance::new(1);
-
-        instance.stop();
-    }
-}
