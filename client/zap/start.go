@@ -57,18 +57,26 @@ type Stream struct {
 	sent []*cdata.CArrowArray
 }
 
-const sizeOfUintPtr = unsafe.Sizeof(uintptr(0))
+const sizeOfInput = unsafe.Sizeof(C.InputMessage{})
+const sizeOfOutput = unsafe.Sizeof(C.OutputMessage{})
 
-func uintptrToBytes(u *uintptr) []byte {
-	return (*[sizeOfUintPtr]byte)(unsafe.Pointer(u))[:]
+func inputMessageBytes(msg *C.InputMessage) []byte {
+	return (*[sizeOfInput]byte)(unsafe.Pointer(msg))[:]
+}
+
+func outputMessageBytes(msg *C.OutputMessage) []byte {
+	return (*[sizeOfOutput]byte)(unsafe.Pointer(msg))[:]
 }
 
 func (s *Stream) Write(record arrow.Record) error {
 	cArray := new(cdata.CArrowArray)
 	cdata.ExportArrowRecordBatch(record, cArray, nil)
 	s.sent = append(s.sent, cArray)
-	ptr := uintptr(unsafe.Pointer(cArray))
-	buf := uintptrToBytes(&ptr)
+
+	var inputMessage C.InputMessage
+	inputMessage.array = unsafe.Pointer(cArray)
+
+	buf := inputMessageBytes(&inputMessage)
 	n, err := s.inputProducer.Write(buf)
 	if err != nil {
 		return err
@@ -80,8 +88,8 @@ func (s *Stream) Write(record arrow.Record) error {
 }
 
 func (s *Stream) Read() (arrow.Record, error) {
-	var cArray uintptr
-	buf := uintptrToBytes(&cArray)
+	var outputMessage C.OutputMessage
+	buf := outputMessageBytes(&outputMessage)
 	n, err := s.outputConsumer.Read(buf)
 	if err != nil {
 		return nil, err
@@ -93,23 +101,13 @@ func (s *Stream) Read() (arrow.Record, error) {
 		return nil, syscall.EIO
 	}
 
-	defer cdata.ReleaseCArrowArray(cdata.ArrayFromPtr(cArray))
+	array := (*cdata.CArrowArray)(outputMessage.array)
+	schema := (*cdata.CArrowSchema)(outputMessage.schema)
 
-	var cSchema uintptr
-	buf = uintptrToBytes(&cSchema)
-	n, err = s.outputConsumer.Read(buf)
-	if err != nil {
-		return nil, err
-	}
+	defer cdata.ReleaseCArrowArray(array)
+	defer cdata.ReleaseCArrowSchema(schema)
 
-	if n == 0 {
-		return nil, nil
-	} else if n != len(buf) {
-		return nil, syscall.EIO
-	}
-
-	defer cdata.ReleaseCArrowSchema(cdata.SchemaFromPtr(cSchema))
-	return cdata.ImportCRecordBatch(cdata.ArrayFromPtr(cArray), cdata.SchemaFromPtr(cSchema))
+	return cdata.ImportCRecordBatch(array, schema)
 }
 
 func (s *Stream) CloseSend() error {

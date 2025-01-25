@@ -43,6 +43,50 @@ struct ZapInstance {
     join_handle: JoinHandle<()>,
 }
 
+#[repr(C)]
+pub struct InputMessage {
+    array: *mut std::ffi::c_void,
+}
+
+unsafe impl Send for InputMessage {}
+impl Default for InputMessage {
+    fn default() -> Self {
+        Self {
+            array: std::ptr::null_mut(),
+        }
+    }
+}
+
+#[repr(C)]
+pub struct OutputMessage {
+    array: *mut std::ffi::c_void,
+    schema: *mut std::ffi::c_void,
+}
+
+unsafe impl Send for OutputMessage {}
+impl Default for OutputMessage {
+    fn default() -> Self {
+        Self {
+            array: std::ptr::null_mut(),
+            schema: std::ptr::null_mut(),
+        }
+    }
+}
+
+unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
+    core::slice::from_raw_parts(
+        (p as *const T) as *const u8,
+        ::core::mem::size_of::<T>(),
+    )
+}
+
+unsafe fn any_as_u8_slice_mut<T: Sized>(p: &T) -> &mut [u8] {
+    core::slice::from_raw_parts_mut(
+        (p as *const T) as *mut u8,
+        ::core::mem::size_of::<T>(),
+    )
+}
+
 // The entrypoint for the executor.
 //
 // How do query work?
@@ -97,7 +141,10 @@ async fn entrypoint(mut query_input_rx: Receiver<Query>) -> anyhow::Result<()> {
 
                 tokio::spawn(
                     async move {
-                        let mut buf = [0; std::mem::size_of::<*mut FFI_ArrowArray>()];
+                        let input_message = InputMessage::default();
+                        let mut buf = unsafe { any_as_u8_slice_mut(&input_message) };
+
+                        let mut index = 0;
 
                         loop {
                             let input = input_receiver.readable().await.expect("input");
@@ -107,11 +154,13 @@ async fn entrypoint(mut query_input_rx: Receiver<Query>) -> anyhow::Result<()> {
                                         break;
                                     }
 
-                                    assert_eq!(size, buf.len());
+                                    assert_eq!(size, std::mem::size_of::<InputMessage>());
+                                    
                                     let array = unsafe {
-                                        let ptr = *(buf.as_ptr() as *const *mut FFI_ArrowArray);
+                                        let ptr = input_message.array as *mut FFI_ArrowArray;
                                         FFI_ArrowArray::from_raw(ptr)
                                     };
+
                                     let data = unsafe {
                                         from_ffi_and_data_type(array, data_type.clone())
                                             .expect("from ffi")
@@ -119,6 +168,8 @@ async fn entrypoint(mut query_input_rx: Receiver<Query>) -> anyhow::Result<()> {
                                     let array = StructArray::from(data);
                                     let record = RecordBatch::from(array);
                                     let _ = internal_input_tx.send(Ok(record)).await;
+                                    eprintln!("zap: received input {}", index);
+                                    index += 1;
                                 }
                                 Err(ref err)
                                     if err.kind() == io::ErrorKind::WouldBlock
@@ -141,29 +192,28 @@ async fn entrypoint(mut query_input_rx: Receiver<Query>) -> anyhow::Result<()> {
                 let df = ctx.sql(&query.sql).await.expect("sql");
                 let mut stream = df.execute_stream().await.expect("execute stream");
 
+                let mut index = 0;
+
                 while let Some(batch) = stream.next().await {
                     let batch = batch.expect("batch");
                     let data = StructArray::from(batch).into_data();
                     let (array, schema) = to_ffi(&data).expect("to ffi");
 
-                    let mut buf = [0; std::mem::size_of::<*mut FFI_ArrowArray>()
-                        + std::mem::size_of::<*mut FFI_ArrowSchema>()];
                     let array_ptr = Box::into_raw(Box::new(array));
                     let schema_ptr = Box::into_raw(Box::new(schema));
-
-                    unsafe {
-                        *(buf.as_mut_ptr() as *mut *mut FFI_ArrowArray) = array_ptr;
-                        *(buf
-                            .as_mut_ptr()
-                            .add(std::mem::size_of::<*mut FFI_ArrowArray>())
-                            as *mut *mut FFI_ArrowSchema) = schema_ptr;
-                    }
+                    let message = OutputMessage {
+                        array: array_ptr as *mut std::ffi::c_void,
+                        schema: schema_ptr as *mut std::ffi::c_void,
+                    };
+                    let buf = unsafe { any_as_u8_slice(&message) };
 
                     loop {
                         let output = output_sender.writable().await.expect("output");
-                        match output.get_inner().write(&buf) {
+                        match output.get_inner().write(buf) {
                             Ok(size) => {
-                                assert_eq!(size, buf.len());
+                                assert_eq!(size, std::mem::size_of::<OutputMessage>());
+                                eprintln!("zap: sent output {}", index);
+                                index += 1;
                                 break;
                             }
                             Err(ref err)
@@ -269,6 +319,7 @@ pub extern "C" fn zap_stop(ptr: *mut std::ffi::c_void) {
     let instance = unsafe { Box::from_raw(ptr as *mut ZapInstance) };
     drop(instance.query_input_tx);
     instance.join_handle.join().expect("executor stop");
+    eprintln!("zap: executor stopped");
 }
 
 // Create a non-blocking pipe and return the file descriptors. The caller is

@@ -70,6 +70,7 @@ func main() {
 			record := NewRecord(i, allocator.CGoAllocator)
 			stream.Write(record)
 			record.Release()
+			fmt.Println("client: sent record", i)
 		}
 
 		return stream.CloseSend()
@@ -78,6 +79,7 @@ func main() {
 	group.Go(func() error {
 		defer close(haveResult)
 		fmt.Println("client: reading records")
+		index := 0
 		for {
 			record, err := stream.Read()
 			if err != nil {
@@ -88,7 +90,8 @@ func main() {
 				return err
 			}
 
-			fmt.Println("client: received record", record)
+			fmt.Println("client: received record", index, record)
+			index++
 			record.Release()
 		}
 	})
