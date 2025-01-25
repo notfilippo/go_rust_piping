@@ -1,4 +1,5 @@
-use std::{io, os::fd::RawFd};
+use std::io;
+use std::os::fd::RawFd;
 
 // Create a new pipe with the `O_CLOEXEC` and `O_NONBLOCK` flags set.
 // This is a wrapper around `libc::pipe2` or `libc::pipe` depending on the platform.

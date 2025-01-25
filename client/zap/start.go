@@ -1,11 +1,12 @@
 package zap
 
 // #cgo CFLAGS: -I../../zap/include
-// #cgo LDFLAGS: -L../../target/debug -lzap -lm
+// #cgo LDFLAGS: -L../../target/debug -lzap -lm -framework CoreFoundation -framework CoreServices -framework Security -framework SystemConfiguration
 // #include <zap.h>
 import "C"
 
 import (
+	"io"
 	"os"
 	"syscall"
 	"unsafe"
@@ -77,28 +78,40 @@ func (s *Stream) Write(record arrow.Record) error {
 	inputMessage.array = unsafe.Pointer(cArray)
 
 	buf := inputMessageBytes(&inputMessage)
-	n, err := s.inputProducer.Write(buf)
-	if err != nil {
-		return err
+
+	// Write all the bytes in the buffer
+	for len(buf) > 0 {
+		n, err := s.inputProducer.Write(buf)
+		if err != nil {
+			return err
+		}
+
+		if n == 0 {
+			return io.EOF
+		} else {
+			buf = buf[n:]
+		}
 	}
-	if n != len(buf) {
-		return syscall.EIO
-	}
+
 	return nil
 }
 
 func (s *Stream) Read() (arrow.Record, error) {
 	var outputMessage C.OutputMessage
 	buf := outputMessageBytes(&outputMessage)
-	n, err := s.outputConsumer.Read(buf)
-	if err != nil {
-		return nil, err
-	}
 
-	if n == 0 {
-		return nil, nil
-	} else if n != len(buf) {
-		return nil, syscall.EIO
+	// Read exactly the number of bytes in the buffer
+	for len(buf) > 0 {
+		n, err := s.outputConsumer.Read(buf)
+		if err != nil {
+			return nil, err
+		}
+
+		if n == 0 {
+			return nil, io.EOF
+		} else {
+			buf = buf[n:]
+		}
 	}
 
 	array := (*cdata.CArrowArray)(outputMessage.array)

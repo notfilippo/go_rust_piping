@@ -1,15 +1,14 @@
-package main
+package client
 
 import (
 	"fmt"
-	"io"
-
 	"github.com/apache/arrow/go/v17/arrow"
 	"github.com/apache/arrow/go/v17/arrow/array"
 	"github.com/apache/arrow/go/v17/arrow/memory"
-	"github.com/notfilippo/go_rust_piping/client/allocator"
 	"github.com/notfilippo/go_rust_piping/client/zap"
 	"golang.org/x/sync/errgroup"
+	"io"
+	"time"
 )
 
 var (
@@ -22,7 +21,7 @@ var (
 	)
 )
 
-func NewRecord(index int, allocator memory.Allocator) arrow.Record {
+func newRecord(index int, allocator memory.Allocator) arrow.Record {
 	b := array.NewRecordBuilder(allocator, schema)
 	defer b.Release()
 
@@ -45,7 +44,7 @@ func NewRecord(index int, allocator memory.Allocator) arrow.Record {
 	return b.NewRecord()
 }
 
-func main() {
+func Run(allocator memory.Allocator) {
 	executor := zap.Start()
 	defer executor.Close()
 
@@ -67,10 +66,21 @@ func main() {
 			default:
 			}
 
-			record := NewRecord(i, allocator.CGoAllocator)
-			stream.Write(record)
+			record := newRecord(i, allocator)
+
+			err = stream.Write(record)
+			if err != nil {
+				if err == io.EOF {
+					return stream.CloseSend()
+				}
+				record.Release()
+				_ = stream.CloseSend()
+				return err
+			}
+
 			record.Release()
 			fmt.Println("client: sent record", i)
+			time.Sleep(1 * time.Second)
 		}
 
 		return stream.CloseSend()

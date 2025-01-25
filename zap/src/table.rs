@@ -1,42 +1,42 @@
-use std::{
-    any::Any,
-    fmt::{Debug, Formatter},
-    sync::{Arc, Mutex},
-};
+use std::any::Any;
+use std::fmt::{Debug, Formatter};
+use std::sync::{Arc, Mutex};
 
 use arrow::datatypes::SchemaRef;
-use datafusion::{
-    catalog::{Session, TableProvider},
-    common::{internal_datafusion_err, project_schema},
-    datasource::TableType,
-    error::Result,
-    execution::{SendableRecordBatchStream, TaskContext},
-    physical_expr::EquivalenceProperties,
-    physical_plan::{
-        execution_plan::{Boundedness, EmissionType},
-        DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
-    },
-    prelude::Expr,
+use datafusion::catalog::{Session, TableProvider};
+use datafusion::common::{internal_datafusion_err, project_schema};
+use datafusion::datasource::TableType;
+use datafusion::error::Result;
+use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
 };
+use datafusion::prelude::Expr;
 
-pub struct StreamWrapper(pub Mutex<Option<SendableRecordBatchStream>>);
+/// A wrapper around a `SendableRecordBatchStream` that can only be consumed once.
+pub struct OneShotStreamWrapper(pub Mutex<Option<SendableRecordBatchStream>>);
 
-impl From<SendableRecordBatchStream> for StreamWrapper {
+impl From<SendableRecordBatchStream> for OneShotStreamWrapper {
     fn from(stream: SendableRecordBatchStream) -> Self {
         Self(Mutex::new(Some(stream)))
     }
 }
 
-impl Debug for StreamWrapper {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("StreamWrapper").finish()
+impl Debug for OneShotStreamWrapper {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("OneShotStreamWrapper").finish()
     }
 }
 
+/// A `TableProvider` that when scanned returns a `OneShotStreamExec`.
+/// Note: This table provider can be scanned multiple times but the underlying stream can only be
+/// consumed once.
 #[derive(Debug)]
 pub struct OneShotStreamProvider {
     pub schema: SchemaRef,
-    pub stream: Arc<StreamWrapper>,
+    pub stream: Arc<OneShotStreamWrapper>,
 }
 
 #[async_trait::async_trait]
@@ -68,9 +68,11 @@ impl TableProvider for OneShotStreamProvider {
     }
 }
 
+/// An `ExecutionPlan` that consumes a `OneShotStreamWrapper` and returns the underlying
+/// `SendableRecordBatchStream`. This plan can only be executed once.
 #[derive(Debug)]
 pub struct OneShotStreamExec {
-    stream: Arc<StreamWrapper>,
+    stream: Arc<OneShotStreamWrapper>,
     properties: PlanProperties,
 }
 
@@ -78,7 +80,7 @@ impl OneShotStreamExec {
     pub fn try_new(
         schema: SchemaRef,
         projection: Option<&Vec<usize>>,
-        stream: Arc<StreamWrapper>,
+        stream: Arc<OneShotStreamWrapper>,
     ) -> Result<Self> {
         let projected_schema = project_schema(&schema, projection)?;
         let properties = PlanProperties::new(

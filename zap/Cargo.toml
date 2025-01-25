@@ -7,8 +7,8 @@ edition = "2021"
 prost = "0.13"
 anyhow = "1.0"
 tokio-stream = "0.1"
-tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "net"] }
-datafusion = "44.0"
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "net", "fs"] }
+datafusion = { version = "44.0", default-features = false }
 arrow = { version = "53.0", features = ["ffi"] }
 futures = "0.3"
 libc = "0.2"
