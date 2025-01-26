@@ -1,7 +1,5 @@
 package zap
 
-import "C"
-
 import (
 	"io"
 	"os"

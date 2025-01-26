@@ -1,7 +1,8 @@
 package zap
 
 // #cgo CFLAGS: -I../../zap/include
-// #cgo LDFLAGS: -L../../target/debug -lzap -lm -framework CoreFoundation -framework CoreServices -framework Security -framework SystemConfiguration
+// #cgo linux LDFLAGS: -L../../target/debug -lzap -lm
+// #cgo darwin LDFLAGS: -L../../target/debug -lzap -lm -framework CoreFoundation -framework CoreServices -framework Security -framework SystemConfiguration
 // #include <zap.h>
 import "C"
 

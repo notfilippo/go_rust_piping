@@ -5,8 +5,6 @@ use std::{fmt, io};
 
 use tokio::io::unix::AsyncFd;
 
-///! Messages sent between the client and the executor.
-
 /// The input message sent from the client to the executor.
 /// The `array` field is a valid pointer to an [arrow::ffi::Ffi_ArrowArray].
 #[repr(C)]
@@ -54,7 +52,7 @@ pub(crate) unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
 
 /// Utility function to convert a mutable reference to a type to a mutable slice of bytes
 /// without copying the data.
-pub(crate) unsafe fn any_as_u8_slice_mut<T: Sized>(p: &T) -> &mut [u8] {
+pub(crate) unsafe fn any_as_u8_slice_mut<T: Sized>(p: &mut T) -> &mut [u8] {
     core::slice::from_raw_parts_mut((p as *const T) as *mut u8, size_of::<T>())
 }
 
@@ -111,8 +109,8 @@ impl<T: Default> MessagePipe<T> {
     }
 
     pub async fn recv(&self) -> io::Result<Option<T>> {
-        let msg = T::default();
-        let mut buf = unsafe { any_as_u8_slice_mut(&msg) };
+        let mut msg = T::default();
+        let mut buf = unsafe { any_as_u8_slice_mut(&mut msg) };
 
         while !buf.is_empty() {
             let guard = self.file.readable().await?;

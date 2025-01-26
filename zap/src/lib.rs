@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::os::fd::{FromRawFd, RawFd};
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use std::thread::JoinHandle;
 
 use arrow::array::{Array, RecordBatch, StructArray};
@@ -21,11 +21,13 @@ mod table;
 
 use tikv_jemallocator::Jemalloc;
 use tokio::sync::mpsc::error::SendError;
+use tokio_util::task::TaskTracker;
 
 use crate::contract::{InputMessage, MessagePipe, OutputMessage};
 
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
+static START: Once = Once::new();
 
 /// A query to be executed by the executor.
 struct Query {
@@ -71,7 +73,7 @@ impl Instance {
     pub fn stop(self) {
         drop(self.query_input_tx);
         self.join_handle.join().expect("executor stop");
-        eprintln!("zap: executor stopped");
+        log::trace!("zap: executor stopped");
     }
 }
 
@@ -99,119 +101,132 @@ impl Instance {
 // input: [ArrowArray*] [ArrowArray*] [ArrowArray*] ...
 // output: [ArrowArray* ArrowSchema*] [ArrowArray* ArrowSchema*] [ArrowArray* ArrowSchema*] ...
 async fn entrypoint(mut query_input_rx: Receiver<Query>) -> anyhow::Result<()> {
-    eprintln!("zap: hello, world!");
+    log::trace!("zap: hello, world!");
+
+    let tracker = TaskTracker::new();
 
     while let Some(query) = query_input_rx.recv().await {
-        tokio::spawn(
-            async move {
-                let input_receiver = MessagePipe::<InputMessage>::try_from(query.input_receiver)
-                    .expect("input receiver");
-                let output_sender = MessagePipe::<OutputMessage>::try_from(query.output_sender)
-                    .expect("output sender");
+        tracker.spawn(async move {
+            let input_receiver = MessagePipe::<InputMessage>::try_from(query.input_receiver)
+                .expect("input receiver");
+            let output_sender =
+                MessagePipe::<OutputMessage>::try_from(query.output_sender).expect("output sender");
 
-                let ctx = SessionContext::new();
+            let ctx = SessionContext::new();
 
-                let (internal_input_tx, internal_input_rx) =
-                    channel::<Result<RecordBatch, DataFusionError>>(1);
+            let (internal_input_tx, internal_input_rx) =
+                channel::<Result<RecordBatch, DataFusionError>>(1);
 
-                let schema = Arc::new(query.schema);
+            let schema = Arc::new(query.schema);
 
-                let stream = ReceiverStream::new(internal_input_rx);
-                let stream = RecordBatchStreamAdapter::new(schema.clone(), stream);
-                let stream: SendableRecordBatchStream = Box::pin(stream);
-                let stream = OneShotStreamWrapper::from(stream);
+            let stream = ReceiverStream::new(internal_input_rx);
+            let stream = RecordBatchStreamAdapter::new(schema.clone(), stream);
+            let stream: SendableRecordBatchStream = Box::pin(stream);
+            let stream = OneShotStreamWrapper::from(stream);
 
-                let provider = table::OneShotStreamProvider {
-                    schema: schema.clone(),
-                    stream: Arc::new(stream),
-                };
+            let provider = table::OneShotStreamProvider {
+                schema: schema.clone(),
+                stream: Arc::new(stream),
+            };
 
-                ctx.register_table("data", Arc::new(provider))
-                    .expect("register table");
+            ctx.register_table("data", Arc::new(provider))
+                .expect("register table");
 
-                let data_type = DataType::Struct(schema.fields().clone());
+            let data_type = DataType::Struct(schema.fields().clone());
 
-                tokio::spawn(
-                    async move {
-                        let mut index = 0;
-                        while let Some(input) = input_receiver.recv().await.transpose() {
-                            let input = input.expect("input");
-                            let array = unsafe {
-                                let ptr = input.array as *mut FFI_ArrowArray;
-                                FFI_ArrowArray::from_raw(ptr)
-                            };
+            let join_receiver = tokio::spawn(
+                async move {
+                    let mut index = 0;
+                    while let Some(input) = input_receiver.recv().await.transpose() {
+                        let input = input.expect("input");
+                        let array = unsafe {
+                            let ptr = input.array as *mut FFI_ArrowArray;
+                            FFI_ArrowArray::from_raw(ptr)
+                        };
 
-                            let data = unsafe {
-                                from_ffi_and_data_type(array, data_type.clone()).expect("from ffi")
-                            };
-                            let array = StructArray::from(data);
-                            let record = RecordBatch::from(array);
-                            let _ = internal_input_tx.send(Ok(record)).await;
-                            eprintln!("zap: received input {}", index);
-                            index += 1;
-                        }
+                        let data = unsafe {
+                            from_ffi_and_data_type(array, data_type.clone()).expect("from ffi")
+                        };
+                        let array = StructArray::from(data);
+                        let record = RecordBatch::from(array);
+                        let _ = internal_input_tx.send(Ok(record)).await;
+                        log::trace!("zap: received input {}", index);
+                        index += 1;
                     }
-                    .then(|_| async {
-                        eprintln!("zap: input stream closed");
-                    }),
-                );
+                }
+                .then(|_| async {
+                    log::trace!("zap: input stream closed");
+                }),
+            );
 
-                let df = ctx.sql(&query.sql).await.expect("sql");
-                let mut stream = df.execute_stream().await.expect("execute stream");
+            let join_sender = tokio::spawn(
+                async move {
+                    let df = ctx.sql(&query.sql).await.expect("sql");
+                    let mut stream = df.execute_stream().await.expect("execute stream");
 
-                let mut index = 0;
+                    let mut index = 0;
 
-                while let Some(batch) = stream.next().await {
-                    let batch = batch.expect("batch");
-                    let data = StructArray::from(batch).into_data();
-                    let (array, schema) = to_ffi(&data).expect("to ffi");
+                    while let Some(batch) = stream.next().await {
+                        let batch = batch.expect("batch");
+                        let data = StructArray::from(batch).into_data();
+                        let (array, schema) = to_ffi(&data).expect("to ffi");
 
-                    let array_ptr = Box::into_raw(Box::new(array));
-                    let schema_ptr = Box::into_raw(Box::new(schema));
+                        let array_ptr = Box::into_raw(Box::new(array));
+                        let schema_ptr = Box::into_raw(Box::new(schema));
 
-                    let message = OutputMessage {
-                        array: array_ptr as *mut std::ffi::c_void,
-                        schema: schema_ptr as *mut std::ffi::c_void,
-                    };
+                        let message = OutputMessage {
+                            array: array_ptr as *mut std::ffi::c_void,
+                            schema: schema_ptr as *mut std::ffi::c_void,
+                        };
 
-                    match output_sender.send(message).await {
-                        Ok(_) => {
-                            eprintln!("zap: sent output {}", index);
-                            index += 1;
-                            continue;
-                        }
-                        Err(contract::SendError(message, err)) => {
-                            unsafe {
-                                let _ = Box::from_raw(message.array as *mut FFI_ArrowArray);
-                                let _ = Box::from_raw(message.schema as *mut FFI_ArrowSchema);
+                        match output_sender.send(message).await {
+                            Ok(_) => {
+                                log::trace!("zap: sent output {}", index);
+                                index += 1;
+                                continue;
                             }
+                            Err(contract::SendError(message, err)) => {
+                                unsafe {
+                                    let _ = Box::from_raw(message.array as *mut FFI_ArrowArray);
+                                    let _ = Box::from_raw(message.schema as *mut FFI_ArrowSchema);
+                                }
 
-                            if let Some(err) = err {
-                                panic!("send error: {}", err);
-                            } else {
-                                // EOF
-                                break;
+                                if let Some(err) = err {
+                                    panic!("send error: {}", err);
+                                } else {
+                                    // EOF
+                                    break;
+                                }
                             }
                         }
                     }
                 }
-            }
-            .then(|_| async {
-                eprintln!("zap: output stream closed");
-            }),
-        );
+                .then(|_| async {
+                    log::trace!("zap: output stream closed");
+                }),
+            );
+
+            // Wait for the input and output streams to complete.
+            join_receiver.await.expect("join receiver");
+            join_sender.await.expect("join sender");
+        });
     }
 
-    eprintln!("zap: goodbye, world!");
+    tracker.close();
+    tracker.wait().await;
+
+    log::trace!("zap: goodbye, world!");
 
     Ok(())
 }
 
 /// Start the executor and return a pointer to the instance. The caller is
 /// responsible for stopping the executor and freeing the memory when it is no
-/// longer needed by calling [[zap_stop].
+/// longer needed by calling [zap_stop].
 #[no_mangle]
 pub extern "C" fn zap_start() -> *mut std::ffi::c_void {
+    START.call_once(env_logger::init);
+
     let instance = Instance::new(1);
     Box::into_raw(Box::new(instance)) as *mut std::ffi::c_void
 }
@@ -221,9 +236,15 @@ pub extern "C" fn zap_start() -> *mut std::ffi::c_void {
 /// - a pointer to a null-terminated string containing the SQL query,
 /// - a pointer to an FFI_ArrowSchema value describing the input schema,
 /// - a file descriptor for reading input data.
+///
 /// The function returns a file descriptor for writing output data.
+///
+/// # Safety
+///
+/// The caller must ensure that the pointers are valid and that the file
+/// descriptors are valid.
 #[no_mangle]
-pub extern "C" fn zap_query(
+pub unsafe extern "C" fn zap_query(
     ptr: *mut std::ffi::c_void,
     sql: *const std::ffi::c_char,
     schema: *mut std::ffi::c_void,
@@ -270,8 +291,12 @@ pub extern "C" fn zap_stop(ptr: *mut std::ffi::c_void) {
 
 /// Create a non-blocking pipe and return the file descriptors. The caller is
 /// responsible for closing the file descriptors when they are no longer needed.
+///
+/// # Safety
+///
+/// The caller must ensure that fds is a valid pointer to an array of two c_int.
 #[no_mangle]
-pub extern "C" fn zap_pipe(fds: *mut RawFd) -> std::ffi::c_int {
+pub unsafe extern "C" fn zap_pipe(fds: *mut RawFd) -> std::ffi::c_int {
     let [input_receiver, output_sender] = match pipe::new_raw() {
         Ok(fds) => fds,
         Err(err) => return err.raw_os_error().unwrap_or(-1),

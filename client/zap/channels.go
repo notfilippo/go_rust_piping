@@ -2,8 +2,9 @@ package zap
 
 import (
 	"context"
-	"github.com/apache/arrow/go/v17/arrow"
 	"io"
+
+	"github.com/apache/arrow/go/v17/arrow"
 )
 
 func (s *Stream) Channelize(ctx context.Context, input <-chan arrow.Record) <-chan arrow.Record {
