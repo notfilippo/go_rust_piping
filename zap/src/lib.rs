@@ -1,11 +1,12 @@
 use std::fs::File;
+use std::mem::ManuallyDrop;
 use std::os::fd::{FromRawFd, RawFd};
 use std::sync::{Arc, Once};
 use std::thread::JoinHandle;
 
 use arrow::array::{Array, RecordBatch, StructArray};
 use arrow::datatypes::{DataType, Schema};
-use arrow::ffi::{from_ffi_and_data_type, to_ffi, FFI_ArrowArray, FFI_ArrowSchema};
+use arrow::ffi::{from_ffi_and_data_type, to_ffi, FFI_ArrowSchema};
 use datafusion::error::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
@@ -139,14 +140,10 @@ async fn entrypoint(mut query_input_rx: Receiver<Query>) -> anyhow::Result<()> {
                     let mut index = 0;
                     while let Some(input) = input_receiver.recv().await.transpose() {
                         let input = input.expect("input");
-                        let array = unsafe {
-                            let ptr = input.array as *mut FFI_ArrowArray;
-                            FFI_ArrowArray::from_raw(ptr)
+                        let data = unsafe {
+                            from_ffi_and_data_type(input.array, data_type.clone()).expect("from ffi")
                         };
 
-                        let data = unsafe {
-                            from_ffi_and_data_type(array, data_type.clone()).expect("from ffi")
-                        };
                         let array = StructArray::from(data);
                         let record = RecordBatch::from(array);
                         let _ = internal_input_tx.send(Ok(record)).await;
@@ -171,26 +168,18 @@ async fn entrypoint(mut query_input_rx: Receiver<Query>) -> anyhow::Result<()> {
                         let data = StructArray::from(batch).into_data();
                         let (array, schema) = to_ffi(&data).expect("to ffi");
 
-                        let array_ptr = Box::into_raw(Box::new(array));
-                        let schema_ptr = Box::into_raw(Box::new(schema));
-
-                        let message = OutputMessage {
-                            array: array_ptr as *mut std::ffi::c_void,
-                            schema: schema_ptr as *mut std::ffi::c_void,
-                        };
+                        let message = OutputMessage { array, schema};
 
                         match output_sender.send(message).await {
-                            Ok(_) => {
+                            Ok(msg) => {
+                                let _ = ManuallyDrop::new(msg.array);
+                                let _ = ManuallyDrop::new(msg.schema);
+
                                 log::trace!("zap: sent output {}", index);
                                 index += 1;
                                 continue;
                             }
-                            Err(contract::SendError(message, err)) => {
-                                unsafe {
-                                    let _ = Box::from_raw(message.array as *mut FFI_ArrowArray);
-                                    let _ = Box::from_raw(message.schema as *mut FFI_ArrowSchema);
-                                }
-
+                            Err(contract::SendError(_, err)) => {
                                 if let Some(err) = err {
                                     panic!("send error: {}", err);
                                 } else {

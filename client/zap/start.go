@@ -3,6 +3,7 @@ package zap
 // #cgo CFLAGS: -I../../zap/include
 // #cgo linux LDFLAGS: -L../../target/debug -lzap -lm
 // #cgo darwin LDFLAGS: -L../../target/debug -lzap -lm -framework CoreFoundation -framework CoreServices -framework Security -framework SystemConfiguration
+//
 // #include <zap.h>
 import "C"
 
@@ -47,7 +48,7 @@ func (e *Executor) Query(sql string, schema *arrow.Schema) (*Stream, error) {
 
 	outputConsumer := os.NewFile(uintptr(outputReceiver), "outputConsumer")
 
-	return &Stream{inputProducer, outputConsumer, nil}, nil
+	return &Stream{inputProducer, outputConsumer}, nil
 }
 
 func (e *Executor) Close() {

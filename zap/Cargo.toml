@@ -8,6 +8,8 @@ prost = "0.13"
 anyhow = "1.0"
 datafusion = { version = "44.0", default-features = false }
 arrow = { version = "53.0", features = ["ffi"] }
+arrow-schema = { version = "53.0", features = ["ffi"] }
+arrow-data = { version = "53.0", features = ["ffi"] }
 futures = "0.3"
 libc = "0.2"
 async-trait = "0.1"

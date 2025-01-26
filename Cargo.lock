@@ -2644,6 +2644,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arrow",
+ "arrow-data",
+ "arrow-schema",
  "async-trait",
  "cbindgen",
  "datafusion",

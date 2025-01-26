@@ -3,13 +3,14 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::{fmt, io};
 
+use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
 use tokio::io::unix::AsyncFd;
 
 /// The input message sent from the client to the executor.
 /// The `array` field is a valid pointer to an [arrow::ffi::Ffi_ArrowArray].
 #[repr(C)]
 pub struct InputMessage {
-    pub(crate) array: *mut std::ffi::c_void,
+    pub(crate) array: FFI_ArrowArray,
 }
 
 unsafe impl Send for InputMessage {}
@@ -18,7 +19,7 @@ unsafe impl Sync for InputMessage {}
 impl Default for InputMessage {
     fn default() -> Self {
         Self {
-            array: std::ptr::null_mut(),
+            array: FFI_ArrowArray::empty(),
         }
     }
 }
@@ -28,8 +29,8 @@ impl Default for InputMessage {
 /// The `schema` field is a valid pointer to an [arrow::ffi::Ffi_ArrowSchema].
 #[repr(C)]
 pub struct OutputMessage {
-    pub(crate) array: *mut std::ffi::c_void,
-    pub(crate) schema: *mut std::ffi::c_void,
+    pub(crate) array: FFI_ArrowArray,
+    pub(crate) schema: FFI_ArrowSchema
 }
 
 unsafe impl Send for OutputMessage {}
@@ -38,8 +39,8 @@ unsafe impl Sync for OutputMessage {}
 impl Default for OutputMessage {
     fn default() -> Self {
         Self {
-            array: std::ptr::null_mut(),
-            schema: std::ptr::null_mut(),
+            array: FFI_ArrowArray::empty(),
+            schema: FFI_ArrowSchema::empty(),
         }
     }
 }
@@ -89,7 +90,7 @@ impl<T> fmt::Display for SendError<T> {
 impl<T> Error for SendError<T> {}
 
 impl<T: Default> MessagePipe<T> {
-    pub async fn send(&self, msg: T) -> Result<(), SendError<T>> {
+    pub async fn send(&self, msg: T) -> Result<T, SendError<T>> {
         let mut buf = unsafe { any_as_u8_slice(&msg) };
 
         while !buf.is_empty() {
@@ -105,7 +106,7 @@ impl<T: Default> MessagePipe<T> {
             }
         }
 
-        Ok(())
+        Ok(msg)
     }
 
     pub async fn recv(&self) -> io::Result<Option<T>> {

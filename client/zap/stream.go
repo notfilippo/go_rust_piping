@@ -12,8 +12,6 @@ import (
 type Stream struct {
 	inputProducer  *os.File
 	outputConsumer *os.File
-
-	sent []*cdata.CArrowArray
 }
 
 const sizeOfInput = unsafe.Sizeof(inputMessage{})
@@ -28,12 +26,12 @@ func outputMessageBytes(msg *outputMessage) []byte {
 }
 
 func (s *Stream) Write(record arrow.Record) error {
-	cArray := new(cdata.CArrowArray)
-	cdata.ExportArrowRecordBatch(record, cArray, nil)
-	s.sent = append(s.sent, cArray)
+	var cArray cdata.CArrowArray
+	cdata.ExportArrowRecordBatch(record, &cArray, nil)
 
 	var msg inputMessage
-	msg.array = unsafe.Pointer(cArray)
+	array := (*cdata.CArrowArray)(unsafe.Pointer(&msg.array))
+	*array = cArray
 
 	buf := inputMessageBytes(&msg)
 
@@ -41,12 +39,12 @@ func (s *Stream) Write(record arrow.Record) error {
 	for len(buf) > 0 {
 		n, err := s.inputProducer.Write(buf)
 		if err != nil {
-			cdata.ReleaseCArrowArray(cArray)
+			cdata.ReleaseCArrowArray(&cArray)
 			return err
 		}
 
 		if n == 0 {
-			cdata.ReleaseCArrowArray(cArray)
+			cdata.ReleaseCArrowArray(&cArray)
 			return io.EOF
 		} else {
 			buf = buf[n:]
@@ -74,8 +72,8 @@ func (s *Stream) Read() (arrow.Record, error) {
 		}
 	}
 
-	array := (*cdata.CArrowArray)(msg.array)
-	schema := (*cdata.CArrowSchema)(msg.schema)
+	array := (*cdata.CArrowArray)(unsafe.Pointer(&msg.array))
+	schema := (*cdata.CArrowSchema)(unsafe.Pointer(&msg.schema))
 
 	defer cdata.ReleaseCArrowArray(array)
 	defer cdata.ReleaseCArrowSchema(schema)
