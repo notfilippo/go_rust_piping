@@ -25,8 +25,8 @@ impl Default for InputMessage {
 }
 
 /// The output message sent from the executor to the client.
-/// The `array` field is a valid pointer to an [arrow::ffi::Ffi_ArrowArray].
-/// The `schema` field is a valid pointer to an [arrow::ffi::Ffi_ArrowSchema].
+/// The `array` field is a valid pointer to an [FFI_ArrowArray].
+/// The `schema` field is a valid pointer to an [FFI_ArrowSchema].
 #[repr(C)]
 pub struct OutputMessage {
     pub(crate) array: FFI_ArrowArray,

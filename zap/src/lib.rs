@@ -100,8 +100,8 @@ impl Instance {
 //   - The byte arrays are written to the output_sender file descriptor.
 //
 // example:
-// input: [ArrowArray*] [ArrowArray*] [ArrowArray*] ...
-// output: [ArrowArray* ArrowSchema*] [ArrowArray* ArrowSchema*] [ArrowArray* ArrowSchema*] ...
+// input: [ArrowArray] [ArrowArray] [ArrowArray] ...
+// output: [ArrowArray ArrowSchema] [ArrowArray ArrowSchema] [ArrowArray ArrowSchema] ...
 async fn entrypoint(mut query_input_rx: Receiver<Query>) -> anyhow::Result<()> {
     log::trace!("zap: hello, world!");
 
@@ -163,7 +163,9 @@ async fn entrypoint(mut query_input_rx: Receiver<Query>) -> anyhow::Result<()> {
                     let plan = datafusion_substrait::logical_plan::consumer::from_substrait_plan(
                         &ctx.state(),
                         &query.plan,
-                    ).await.expect("logical plan");
+                    )
+                    .await
+                    .expect("logical plan");
 
                     let df = ctx.execute_logical_plan(plan).await.expect("dataframe");
                     let mut stream = df.execute_stream().await.expect("execute stream");
@@ -186,7 +188,7 @@ async fn entrypoint(mut query_input_rx: Receiver<Query>) -> anyhow::Result<()> {
                                 index += 1;
                                 continue;
                             }
-                            Err(contract::SendError(_, err)) => {
+                            Err(contract::SendError(_msg, err)) => {
                                 if let Some(err) = err {
                                     panic!("send error: {}", err);
                                 } else {
@@ -244,7 +246,7 @@ pub unsafe extern "C" fn zap_query(
     ptr: *mut std::ffi::c_void,
     plan_bytes: *const std::ffi::c_uchar,
     plan_len: usize,
-    schema: *mut std::ffi::c_void,
+    schema: *const std::ffi::c_void,
     input_receiver: RawFd,
 ) -> RawFd {
     // SAFETY: ptr is assumed to be valid pointer to a ZapInstance value.
@@ -252,11 +254,12 @@ pub unsafe extern "C" fn zap_query(
 
     // SAFETY: plan_bytes is assumed to be valid pointer to a buffer of plan_len bytes.
     let plan_bytes = unsafe { std::slice::from_raw_parts(plan_bytes, plan_len) };
-    let plan = datafusion_substrait::substrait::proto::Plan::decode(plan_bytes).expect("decoded plan");
+    let plan =
+        datafusion_substrait::substrait::proto::Plan::decode(plan_bytes).expect("decoded plan");
 
     // SAFETY: schema is assumed to be valid pointer to an FFI_ArrowSchema value.
-    let schema = unsafe { FFI_ArrowSchema::from_raw(schema as *mut FFI_ArrowSchema) };
-    let schema = Schema::try_from(&schema).expect("schema");
+    let schema: &FFI_ArrowSchema = unsafe { &*(schema as *const FFI_ArrowSchema) };
+    let schema = Schema::try_from(schema).expect("schema");
 
     let [output_receiver, output_sender] = pipe::new_raw().expect("pipe");
 
@@ -310,16 +313,16 @@ pub unsafe extern "C" fn zap_pipe(fds: *mut RawFd) -> std::ffi::c_int {
 /// will be written in the `out_len` pointer. The caller is responsible for the
 /// memory allocated by this function and will need to call [[zap_plan_drop]] to
 /// free it.
-/// 
+///
 /// # Safety
-/// 
+///
 /// The caller must ensure that the pointers of both the input SQL query and the
 /// Arrow Schema are valid. The caller must also ensure that the `out_bytes` and
 /// `out_len` pointers are valid.
 #[no_mangle]
 pub unsafe extern "C" fn zap_plan(
     sql: *const std::ffi::c_char,
-    schema: *mut std::ffi::c_void,
+    schema: *const std::ffi::c_void,
     out_bytes: *mut *mut std::ffi::c_uchar,
     out_len: *mut usize,
 ) {
@@ -330,17 +333,14 @@ pub unsafe extern "C" fn zap_plan(
         .to_string();
 
     // SAFETY: schema is assumed to be valid pointer to an FFI_ArrowSchema value.
-    let schema = unsafe { FFI_ArrowSchema::from_raw(schema as *mut FFI_ArrowSchema) };
-    let schema = Schema::try_from(&schema).expect("schema");
+    let schema: &FFI_ArrowSchema = unsafe { &*(schema as *const FFI_ArrowSchema) };
+    let schema = Schema::try_from(schema).expect("schema");
 
     let ctx = SessionContext::new();
 
     let table = MemTable::try_new(schema.into(), vec![]).expect("mem table");
 
-    let _ = ctx.register_table(
-        "data",
-        Arc::new(table),
-    );
+    let _ = ctx.register_table("data", Arc::new(table));
 
     let df = futures::executor::block_on(ctx.sql(&sql)).expect("dataframe");
     let plan = df.into_optimized_plan().expect("optimized plan");
@@ -358,9 +358,9 @@ pub unsafe extern "C" fn zap_plan(
 }
 
 /// Free the memory allocated by the `zap_plan` function.
-/// 
+///
 /// # Safety
-/// 
+///
 /// The caller must ensure that the `bytes` pointer is valid and that the `len`
 /// value is correct.
 #[no_mangle]

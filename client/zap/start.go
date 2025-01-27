@@ -42,16 +42,12 @@ func (e *Executor) Query(sql string, schema *arrow.Schema) (*Stream, error) {
 	cdata.ExportArrowSchema(schema, cSchema)
 	defer cdata.ReleaseCArrowSchema(cSchema)
 
-	cSchema2 := new(cdata.CArrowSchema)
-	cdata.ExportArrowSchema(schema, cSchema2)
-	defer cdata.ReleaseCArrowSchema(cSchema2)
-
 	var (
 		planBytes *C.uint8_t
 		planLen   C.size_t
 	)
 
-	C.zap_plan(cSql, unsafe.Pointer(cSchema2), &planBytes, &planLen)
+	C.zap_plan(cSql, unsafe.Pointer(cSchema), &planBytes, &planLen)
 	defer C.zap_plan_drop(planBytes, planLen)
 
 	outputReceiver := C.zap_query(e.inner, planBytes, planLen, unsafe.Pointer(cSchema), C.int(fds[0]))
