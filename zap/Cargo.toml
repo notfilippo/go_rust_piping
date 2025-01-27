@@ -7,6 +7,7 @@ edition = "2021"
 prost = "0.13"
 anyhow = "1.0"
 datafusion = { version = "44.0", default-features = false }
+datafusion-substrait = "44.0"
 arrow = { version = "53.0", features = ["ffi"] }
 arrow-schema = { version = "53.0", features = ["ffi"] }
 arrow-data = { version = "53.0", features = ["ffi"] }

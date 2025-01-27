@@ -35,8 +35,6 @@ func (e *Executor) Query(sql string, schema *arrow.Schema) (*Stream, error) {
 		return nil, syscall.Errno(errno)
 	}
 
-	inputProducer := os.NewFile(uintptr(fds[1]), "inputProducer")
-
 	cSql := C.CString(sql)
 	defer C.free(unsafe.Pointer(cSql))
 
@@ -44,8 +42,21 @@ func (e *Executor) Query(sql string, schema *arrow.Schema) (*Stream, error) {
 	cdata.ExportArrowSchema(schema, cSchema)
 	defer cdata.ReleaseCArrowSchema(cSchema)
 
-	outputReceiver := C.zap_query(e.inner, cSql, unsafe.Pointer(cSchema), C.int(fds[0]))
+	cSchema2 := new(cdata.CArrowSchema)
+	cdata.ExportArrowSchema(schema, cSchema2)
+	defer cdata.ReleaseCArrowSchema(cSchema2)
 
+	var (
+		planBytes *C.uint8_t
+		planLen   C.size_t
+	)
+
+	C.zap_plan(cSql, unsafe.Pointer(cSchema2), &planBytes, &planLen)
+	defer C.zap_plan_drop(planBytes, planLen)
+
+	outputReceiver := C.zap_query(e.inner, planBytes, planLen, unsafe.Pointer(cSchema), C.int(fds[0]))
+
+	inputProducer := os.NewFile(uintptr(fds[1]), "inputProducer")
 	outputConsumer := os.NewFile(uintptr(outputReceiver), "outputConsumer")
 
 	return &Stream{inputProducer, outputConsumer}, nil

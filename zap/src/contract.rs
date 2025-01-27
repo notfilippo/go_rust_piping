@@ -30,7 +30,7 @@ impl Default for InputMessage {
 #[repr(C)]
 pub struct OutputMessage {
     pub(crate) array: FFI_ArrowArray,
-    pub(crate) schema: FFI_ArrowSchema
+    pub(crate) schema: FFI_ArrowSchema,
 }
 
 unsafe impl Send for OutputMessage {}
